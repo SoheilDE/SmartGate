@@ -1,0 +1,21 @@
+{
+  "features": {
+    "semantic_cache": true,
+    "model_routing": true,
+    "fallback": true
+  },
+  "routing": {
+    "complexity_threshold": 0.6,
+    "cache_similarity_threshold": 0.92
+  },
+  "models": {
+    "fast": {
+      "model": "gpt-3.5-turbo",
+      "base_url": "https://api.openai.com/v1"
+    },
+    "powerful": {
+      "model": "gpt-4",
+      "base_url": "https://api.openai.com/v1"
+    }
+  }
+}
