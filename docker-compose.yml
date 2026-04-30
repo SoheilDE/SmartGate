@@ -1,0 +1,40 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  smartgate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      METRICS_DB_PATH: /data/metrics.db
+    volumes:
+      - metrics_data:/data
+    depends_on:
+      - qdrant
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      METRICS_DB_PATH: /data/metrics.db
+    volumes:
+      - metrics_data:/data
+    depends_on:
+      - smartgate
+
+volumes:
+  qdrant_data:
+  metrics_data:

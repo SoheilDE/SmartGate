@@ -1,0 +1,13 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+httpx==0.28.1
+pydantic-settings==2.6.1
+qdrant-client==1.12.1
+sentence-transformers==3.3.1
+prometheus-fastapi-instrumentator==7.0.0
+streamlit==1.40.2
+pandas==2.2.3
+altair==5.4.1
+pytest==8.3.4
+pytest-asyncio==0.24.0
+httpx==0.28.1
