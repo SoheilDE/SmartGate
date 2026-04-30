@@ -56,7 +56,7 @@ Your App
 │  │ Validator    │── invalid → retry powerful model  │
 │  └──────────────┘                                   │
 │                                                     │
-│  Telemetry → Prometheus + SQLite → Dashboard        │
+│  Telemetry → Prometheus + PostgreSQL → Dashboard    │
 └─────────────────────────────────────────────────────┘
    │                           │
    ▼                           ▼
@@ -117,6 +117,94 @@ SmartGate ships with a real-time Streamlit dashboard so you always know where yo
 - **Token usage over time** — prompt vs completion tokens, by model
 - **Request volume** — traffic patterns and peak usage windows
 - **Fallback rate** — how often the fast tier needed escalation
+
+---
+
+## Live Admin Configuration
+
+SmartGate ships with a secured admin API that lets operators toggle features and change routing rules **without restarting the service**. All changes are persisted to `config.json` and take effect immediately.
+
+### Setup
+
+Set a strong secret key in `.env`:
+
+```
+ADMIN_API_KEY=your-strong-secret-here
+```
+
+Pass it as a header on every admin request:
+
+```
+X-Admin-Api-Key: your-strong-secret-here
+```
+
+### `config.json` Structure
+
+```json
+{
+  "features": {
+    "semantic_cache": true,
+    "model_routing": true,
+    "fallback": true
+  },
+  "routing": {
+    "complexity_threshold": 0.6,
+    "cache_similarity_threshold": 0.92
+  },
+  "models": {
+    "fast":     { "model": "gpt-3.5-turbo", "base_url": "https://api.openai.com/v1" },
+    "powerful": { "model": "gpt-4",         "base_url": "https://api.openai.com/v1" }
+  }
+}
+```
+
+| Field | Effect when `false` / changed |
+|---|---|
+| `features.semantic_cache` | Every request hits the LLM — useful for debugging or cache-busting |
+| `features.model_routing` | All requests go to the powerful model regardless of complexity |
+| `features.fallback` | Invalid responses are returned as-is without retrying |
+| `routing.complexity_threshold` | Lower → more prompts go to the powerful model; higher → more go to fast |
+| `routing.cache_similarity_threshold` | Lower → more cache hits (less precise); higher → fewer but more accurate hits |
+| `models.fast` / `models.powerful` | Hot-swap any OpenAI-compatible model or endpoint without restarting |
+
+### Admin Endpoints
+
+**Read current config:**
+```bash
+curl http://localhost:8000/admin/config \
+  -H "X-Admin-Api-Key: your-strong-secret-here"
+```
+
+**Toggle a feature off (e.g. disable semantic cache):**
+```bash
+curl -X PUT http://localhost:8000/admin/config \
+  -H "X-Admin-Api-Key: your-strong-secret-here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "features": { "semantic_cache": false, "model_routing": true, "fallback": true }
+  }'
+```
+
+**Switch the fast tier to a local Llama 3 via Ollama:**
+```bash
+curl -X PUT http://localhost:8000/admin/config \
+  -H "X-Admin-Api-Key: your-strong-secret-here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "models": {
+      "fast":     { "model": "llama3", "base_url": "http://localhost:11434/v1" },
+      "powerful": { "model": "gpt-4",  "base_url": "https://api.openai.com/v1" }
+    }
+  }'
+```
+
+**Reload `config.json` from disk** (after editing the file directly):
+```bash
+curl -X POST http://localhost:8000/admin/config/reload \
+  -H "X-Admin-Api-Key: your-strong-secret-here"
+```
+
+> API keys for model providers are never stored in `config.json` — they stay in `.env` only.
 
 ---
 
