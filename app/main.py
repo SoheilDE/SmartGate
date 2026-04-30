@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Security
 from fastapi.security import APIKeyHeader
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from prometheus_fastapi_instrumentator import Instrumentator
 
@@ -98,10 +98,10 @@ async def chat_completions(request: Request):
     if not messages:
         raise HTTPException(status_code=422, detail="messages field is required")
 
+    stream = payload.get("stream", False)
     prompt = " ".join(
         m.get("content", "") for m in messages if m.get("role") == "user"
     )
-
     t_start = time.perf_counter()
     fallback_used = False
 
@@ -120,6 +120,12 @@ async def chat_completions(request: Request):
                 cache_hit=True,
                 fallback=False,
             ))
+            if stream:
+                return StreamingResponse(
+                    _stream_from_cache(response_body),
+                    media_type="text/event-stream",
+                    headers={"X-Cache": "HIT", "X-Model-Used": "cache"},
+                )
             return JSONResponse(
                 content=response_body,
                 headers={"X-Cache": "HIT", "X-Model-Used": "cache"},
@@ -127,18 +133,31 @@ async def chat_completions(request: Request):
 
     # ── 2. Model routing ─────────────────────────────────────────────────────
     if gateway_config.feature_enabled("model_routing"):
-        model_cfg, complexity = select_model(prompt)
+        model_cfg, complexity, routing_reason = select_model(prompt, messages)
     else:
-        # Routing disabled → always use powerful model
-        model_cfg, complexity = select_model(prompt, force_powerful=True)
+        model_cfg, complexity, routing_reason = select_model(prompt, messages, force_powerful=True)
 
+    # ── Streaming path ───────────────────────────────────────────────────────
+    if stream:
+        return StreamingResponse(
+            _stream_llm(payload, model_cfg, prompt, t_start, complexity),
+            media_type="text/event-stream",
+            headers={
+                "X-Cache": "MISS",
+                "X-Model-Used": model_cfg.model,
+                "X-Complexity-Score": str(complexity),
+                "X-Routing-Reason": routing_reason,
+            },
+        )
+
+    # ── Non-streaming path ───────────────────────────────────────────────────
     async with httpx.AsyncClient() as client:
         # ── 3. Forward request ───────────────────────────────────────────────
         response_data = await _call_llm(payload, model_cfg, client)
 
         # ── 4. Fallback ──────────────────────────────────────────────────────
         if gateway_config.feature_enabled("fallback") and not validate(response_data):
-            fallback_cfg, _ = select_model(prompt, force_powerful=True)
+            fallback_cfg, _, _ = select_model(prompt, messages, force_powerful=True)
             response_data = await _call_llm(payload, fallback_cfg, client)
             model_cfg = fallback_cfg
             fallback_used = True
@@ -166,6 +185,7 @@ async def chat_completions(request: Request):
             "X-Cache": "MISS",
             "X-Model-Used": model_cfg.model,
             "X-Complexity-Score": str(complexity),
+            "X-Routing-Reason": routing_reason,
             "X-Fallback": str(fallback_used),
         },
     )
@@ -186,3 +206,88 @@ async def _call_llm(payload: dict, model_cfg, client: httpx.AsyncClient) -> dict
     if resp.status_code != 200:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
     return resp.json()
+
+
+async def _stream_from_cache(response_body: dict):
+    """Emit a cached complete response as a single SSE chunk so stream clients work."""
+    content = (
+        response_body.get("choices", [{}])[0]
+        .get("message", {})
+        .get("content", "")
+    )
+    chunk = {
+        "id": "smartgate-cache",
+        "object": "chat.completion.chunk",
+        "choices": [
+            {"index": 0, "delta": {"role": "assistant", "content": content}, "finish_reason": "stop"}
+        ],
+    }
+    yield f"data: {json.dumps(chunk)}\n\n"
+    yield "data: [DONE]\n\n"
+
+
+async def _stream_llm(payload: dict, model_cfg, prompt: str, t_start: float, complexity: float):
+    """Forward SSE chunks from upstream LLM, then cache + record telemetry when done."""
+    headers = {
+        "Authorization": f"Bearer {model_cfg.api_key}",
+        "Content-Type": "application/json",
+    }
+    body = {**payload, "model": model_cfg.model}
+
+    accumulated_content = ""
+    prompt_tokens = 0
+    completion_tokens = 0
+
+    async with httpx.AsyncClient() as client:
+        async with client.stream(
+            "POST",
+            f"{model_cfg.base_url}/chat/completions",
+            json=body,
+            headers=headers,
+            timeout=120.0,
+        ) as response:
+            if response.status_code != 200:
+                error_body = await response.aread()
+                yield f"data: {json.dumps({'error': error_body.decode()})}\n\n"
+                return
+
+            async for line in response.aiter_lines():
+                if not line:
+                    continue
+                if line.startswith("data: "):
+                    data = line[6:].strip()
+                    if data == "[DONE]":
+                        yield "data: [DONE]\n\n"
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        accumulated_content += delta.get("content", "")
+                        usage = chunk.get("usage", {})
+                        if usage:
+                            prompt_tokens = usage.get("prompt_tokens", 0)
+                            completion_tokens = usage.get("completion_tokens", 0)
+                    except json.JSONDecodeError:
+                        pass
+                yield f"{line}\n\n"
+
+    # Post-stream: store assembled response in cache and record telemetry
+    latency_ms = (time.perf_counter() - t_start) * 1000
+
+    if gateway_config.feature_enabled("semantic_cache") and accumulated_content:
+        cached_response = {
+            "choices": [
+                {"message": {"role": "assistant", "content": accumulated_content}, "finish_reason": "stop"}
+            ],
+            "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
+        }
+        semantic_cache.store(prompt, json.dumps(cached_response))
+
+    record(RequestRecord(
+        model=model_cfg.model,
+        latency_ms=latency_ms,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cache_hit=False,
+        fallback=False,
+    ))

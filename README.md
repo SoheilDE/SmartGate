@@ -77,12 +77,24 @@ SmartGate embeds every prompt into a vector and stores it in Qdrant. Before forw
 - Similarity threshold is configurable — tighten it for precision, loosen it for more savings
 
 ### 2. Intelligent Model Router — Right Model for the Right Job
-Not every prompt needs GPT-4. A customer asking "what are your business hours?" does not need the same model as an engineer asking you to debug a distributed tracing implementation. SmartGate scores each prompt on complexity and routes automatically:
+Not every prompt needs GPT-4. A customer asking "what are your business hours?" does not need the same model as an engineer asking you to debug a distributed tracing implementation. SmartGate classifies each prompt in two stages and routes automatically:
 
-- **Fast tier**: short, factual, or conversational prompts → cheap model (e.g. GPT-3.5, Llama 3 via Ollama, or any OpenRouter model)
-- **Powerful tier**: analytical, multi-step, code-generation, or detailed explanation prompts → your best model
+**Stage 1 — Intent classification:** Every prompt is classified into one of six categories:
 
-Both tiers are fully configurable via environment variables. You can point them at OpenAI, Anthropic, OpenRouter, a local Ollama instance, or any OpenAI-compatible endpoint.
+| Intent | Examples | Default tier |
+|---|---|---|
+| `conversational` | "hi", "thanks", "ok" | fast |
+| `factual` | "what is Python?", "define recursion" | fast |
+| `creative` | "write a poem about the sea" | fast |
+| `math` | "solve 3x + 5 = 20", "prove this theorem" | powerful |
+| `analytical` | "explain microservices vs monoliths", "compare X and Y" | powerful |
+| `code` | "implement binary search", "debug this error" | powerful |
+
+**Stage 2 — Complexity scoring:** A heuristic score (0.0 – 1.0) is computed from task intent signals, code block detection, technical domain vocabulary, constraint density, and prompt length. If no explicit intent rule matches, the score is compared against the configurable threshold.
+
+All model tiers — including custom ones — are fully configurable via the admin API. You can point them at OpenAI, Anthropic (via OpenRouter), DeepSeek, a local Ollama instance, or any OpenAI-compatible endpoint, and change them live without restarting.
+
+**Streaming support:** SmartGate fully supports `"stream": true`. Chunks are forwarded to the client in real-time as they arrive from the upstream model. The semantic cache and telemetry still work — SmartGate assembles the full response in the background after the stream completes.
 
 ### 3. Fallback Validator — Reliability Without Manual Retries
 If a model returns a malformed or empty response, SmartGate catches it before your application ever sees it and automatically retries on the powerful model. No error pages, no silent failures, no engineering time spent building retry logic.
@@ -149,7 +161,19 @@ X-Admin-Api-Key: your-strong-secret-here
   },
   "routing": {
     "complexity_threshold": 0.6,
-    "cache_similarity_threshold": 0.92
+    "cache_similarity_threshold": 0.92,
+    "keyword_routing": [
+      { "keywords": ["legal", "GDPR", "compliance"], "tier": "powerful" },
+      { "keywords": ["translate", "in french"],      "tier": "fast" }
+    ],
+    "intent_routing": {
+      "conversational": "fast",
+      "factual":        "fast",
+      "creative":       "fast",
+      "math":           "powerful",
+      "analytical":     "powerful",
+      "code":           "powerful"
+    }
   },
   "models": {
     "fast":     { "model": "gpt-3.5-turbo", "base_url": "https://api.openai.com/v1" },
@@ -165,6 +189,8 @@ X-Admin-Api-Key: your-strong-secret-here
 | `features.fallback` | Invalid responses are returned as-is without retrying |
 | `routing.complexity_threshold` | Lower → more prompts go to the powerful model; higher → more go to fast |
 | `routing.cache_similarity_threshold` | Lower → more cache hits (less precise); higher → fewer but more accurate hits |
+| `routing.keyword_routing` | Ordered list of keyword rules — first match wins, takes priority over intent and score |
+| `routing.intent_routing` | Maps each intent category to a model tier — takes priority over the score threshold |
 | `models.fast` / `models.powerful` | Hot-swap any OpenAI-compatible model or endpoint without restarting |
 
 ### Admin Endpoints
@@ -198,6 +224,67 @@ curl -X PUT http://localhost:8000/admin/config \
   }'
 ```
 
+**Add keyword routing rules:**
+```bash
+curl -X PUT http://localhost:8000/admin/config \
+  -H "X-Admin-Api-Key: your-strong-secret-here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "routing": {
+      "keyword_routing": [
+        { "keywords": ["legal", "compliance", "GDPR", "contract"], "tier": "powerful" },
+        { "keywords": ["translate", "in french", "in spanish"],    "tier": "fast" },
+        { "keywords": ["security", "audit"],  "tier": "powerful",  "match": "all" }
+      ]
+    }
+  }'
+```
+
+Keyword rules are evaluated **in order** — the first match wins. The optional `"match"` field controls whether `"any"` keyword must appear (default) or `"all"` of them must appear. Matching is case-insensitive substring.
+
+**Route creative prompts to the powerful model:**
+```bash
+curl -X PUT http://localhost:8000/admin/config \
+  -H "X-Admin-Api-Key: your-strong-secret-here" \
+  -H "Content-Type: application/json" \
+  -d '{"routing": {"intent_routing": {"creative": "powerful"}}}'
+```
+
+**Add a custom model tier for a specific intent:**
+
+Step 1 — add the API key to `.env` (one-time, requires restart):
+```bash
+DEEPSEEK_API_KEY=sk-...
+OPENROUTER_API_KEY=sk-or-...
+```
+
+Step 2 — register the model and map the intent (no restart needed):
+```bash
+curl -X PUT http://localhost:8000/admin/config \
+  -H "X-Admin-Api-Key: your-strong-secret-here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "models": {
+      "fast":     { "model": "gpt-3.5-turbo",              "base_url": "https://api.openai.com/v1",      "api_key_env": "FAST_MODEL_API_KEY" },
+      "powerful": { "model": "gpt-4",                      "base_url": "https://api.openai.com/v1",      "api_key_env": "POWERFUL_MODEL_API_KEY" },
+      "code":     { "model": "deepseek-coder",              "base_url": "https://api.deepseek.com/v1",   "api_key_env": "DEEPSEEK_API_KEY" },
+      "creative": { "model": "anthropic/claude-3-5-haiku", "base_url": "https://openrouter.ai/api/v1",  "api_key_env": "OPENROUTER_API_KEY" }
+    },
+    "routing": {
+      "intent_routing": {
+        "code":     "code",
+        "creative": "creative",
+        "math":     "powerful",
+        "analytical": "powerful",
+        "factual":  "fast",
+        "conversational": "fast"
+      }
+    }
+  }'
+```
+
+The `api_key_env` field is the **name** of an environment variable — the actual key stays in `.env` and is never stored in `config.json`. You can define as many model tiers as you need, from any OpenAI-compatible provider.
+
 **Reload `config.json` from disk** (after editing the file directly):
 ```bash
 curl -X POST http://localhost:8000/admin/config/reload \
@@ -216,7 +303,8 @@ Every proxied response includes headers for debugging and observability integrat
 |---|---|---|
 | `X-Cache` | `HIT` | Served from semantic cache |
 | `X-Model-Used` | `gpt-3.5-turbo` | Which model handled the request |
-| `X-Complexity-Score` | `0.42` | Heuristic score (0 = simple, 1 = complex) |
+| `X-Complexity-Score` | `0.42` | Final routing score (0 = simple, 1 = complex) |
+| `X-Routing-Reason` | `intent=code, decision=intent_rule, tier=powerful, ...` | Full breakdown of why this model was selected |
 | `X-Fallback` | `False` | Whether fallback was triggered |
 
 ---

@@ -18,10 +18,19 @@ def _defaults() -> dict[str, Any]:
         "routing": {
             "complexity_threshold": 0.6,
             "cache_similarity_threshold": 0.92,
+            "keyword_routing": [],
+            "intent_routing": {
+                "conversational": "fast",
+                "factual":        "fast",
+                "creative":       "fast",
+                "math":           "powerful",
+                "analytical":     "powerful",
+                "code":           "powerful",
+            },
         },
         "models": {
-            "fast": {"model": "gpt-3.5-turbo", "base_url": "https://api.openai.com/v1"},
-            "powerful": {"model": "gpt-4", "base_url": "https://api.openai.com/v1"},
+            "fast":     {"model": "gpt-3.5-turbo", "base_url": "https://api.openai.com/v1", "api_key_env": "FAST_MODEL_API_KEY"},
+            "powerful": {"model": "gpt-4",         "base_url": "https://api.openai.com/v1", "api_key_env": "POWERFUL_MODEL_API_KEY"},
         },
     }
 
@@ -77,3 +86,22 @@ def fast_model() -> dict[str, str]:
 def powerful_model() -> dict[str, str]:
     with _lock:
         return _config.get("models", {}).get("powerful", {})
+
+
+def model_by_tier(tier: str) -> dict[str, str]:
+    """Return the model config for any named tier (e.g. 'fast', 'powerful', or custom)."""
+    with _lock:
+        models = _config.get("models", {})
+        return models.get(tier, models.get("powerful", {}))
+
+
+def intent_routing() -> dict[str, str]:
+    """Return the admin-configured intent → tier mapping (may be empty if not set)."""
+    with _lock:
+        return _config.get("routing", {}).get("intent_routing", {})
+
+
+def keyword_routing() -> list[dict]:
+    """Return the ordered list of keyword routing rules (may be empty if not set)."""
+    with _lock:
+        return _config.get("routing", {}).get("keyword_routing", [])
