@@ -1,8 +1,8 @@
-import sqlite3
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass
 
+import psycopg2
+import psycopg2.extras
 from prometheus_client import Counter, Histogram
 
 from app.config.settings import settings
@@ -34,26 +34,27 @@ fallbacks_total = Counter(
     ["model"],
 )
 
-# ── SQLite journal ────────────────────────────────────────────────────────────
+# ── PostgreSQL journal ────────────────────────────────────────────────────────
 
-def _conn() -> sqlite3.Connection:
-    return sqlite3.connect(settings.metrics_db_path, check_same_thread=False)
+def _conn() -> psycopg2.extensions.connection:
+    return psycopg2.connect(settings.database_url)
 
 
 def init_db() -> None:
     with _conn() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS requests (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts          REAL    NOT NULL,
-                model       TEXT    NOT NULL,
-                latency_ms  REAL    NOT NULL,
-                prompt_tokens    INTEGER NOT NULL DEFAULT 0,
-                completion_tokens INTEGER NOT NULL DEFAULT 0,
-                cache_hit   INTEGER NOT NULL DEFAULT 0,
-                fallback    INTEGER NOT NULL DEFAULT 0
-            )
-        """)
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS requests (
+                    id                SERIAL PRIMARY KEY,
+                    ts                DOUBLE PRECISION NOT NULL,
+                    model             TEXT             NOT NULL,
+                    latency_ms        DOUBLE PRECISION NOT NULL,
+                    prompt_tokens     INTEGER          NOT NULL DEFAULT 0,
+                    completion_tokens INTEGER          NOT NULL DEFAULT 0,
+                    cache_hit         BOOLEAN          NOT NULL DEFAULT FALSE,
+                    fallback          BOOLEAN          NOT NULL DEFAULT FALSE
+                )
+            """)
 
 
 @dataclass
@@ -75,19 +76,20 @@ def record(r: RequestRecord) -> None:
     if r.fallback:
         fallbacks_total.labels(model=r.model).inc()
 
-    # SQLite
+    # PostgreSQL
     with _conn() as conn:
-        conn.execute(
-            """INSERT INTO requests
-               (ts, model, latency_ms, prompt_tokens, completion_tokens, cache_hit, fallback)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (
-                time.time(),
-                r.model,
-                r.latency_ms,
-                r.prompt_tokens,
-                r.completion_tokens,
-                int(r.cache_hit),
-                int(r.fallback),
-            ),
-        )
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO requests
+                   (ts, model, latency_ms, prompt_tokens, completion_tokens, cache_hit, fallback)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    time.time(),
+                    r.model,
+                    r.latency_ms,
+                    r.prompt_tokens,
+                    r.completion_tokens,
+                    r.cache_hit,
+                    r.fallback,
+                ),
+            )

@@ -1,4 +1,20 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: smartgate
+      POSTGRES_PASSWORD: smartgate
+      POSTGRES_DB: smartgate
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smartgate"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   qdrant:
     image: qdrant/qdrant:v1.12.4
     ports:
@@ -16,11 +32,12 @@ services:
       - .env
     environment:
       QDRANT_URL: http://qdrant:6333
-      METRICS_DB_PATH: /data/metrics.db
-    volumes:
-      - metrics_data:/data
+      DATABASE_URL: postgresql://smartgate:smartgate@postgres:5432/smartgate
     depends_on:
-      - qdrant
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
 
   dashboard:
     build:
@@ -29,12 +46,10 @@ services:
     ports:
       - "8501:8501"
     environment:
-      METRICS_DB_PATH: /data/metrics.db
-    volumes:
-      - metrics_data:/data
+      DATABASE_URL: postgresql://smartgate:smartgate@postgres:5432/smartgate
     depends_on:
       - smartgate
 
 volumes:
+  postgres_data:
   qdrant_data:
-  metrics_data:

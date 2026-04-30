@@ -148,6 +148,7 @@ All configuration is via environment variables (copy `.env.example` to `.env`):
 | `COMPLEXITY_THRESHOLD` | `0.6` | Scores at or above this go to the powerful model |
 | `CACHE_SIMILARITY_THRESHOLD` | `0.92` | Cosine similarity required for a cache hit |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant vector store URL |
+| `DATABASE_URL` | `postgresql://smartgate:smartgate@localhost:5432/smartgate` | PostgreSQL connection string for telemetry |
 
 **Example setups:**
 
@@ -183,6 +184,6 @@ pytest tests/                    # run test suite
 |---|---|
 | Proxy server | FastAPI + HTTPX (async) |
 | Semantic cache | Qdrant + sentence-transformers (`all-MiniLM-L6-v2`) |
-| Metrics | Prometheus + SQLite |
+| Metrics | Prometheus + PostgreSQL |
 | Dashboard | Streamlit |
 | Orchestration | Docker Compose |

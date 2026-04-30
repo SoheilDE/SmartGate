@@ -22,8 +22,14 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "smartgate_cache"
 
+    # Admin
+    admin_api_key: str = ""
+
+    # Gateway config file
+    gateway_config_path: str = "config.json"
+
     # Telemetry
-    metrics_db_path: str = "./metrics.db"
+    database_url: str = "postgresql://smartgate:smartgate@localhost:5432/smartgate"
 
 
 settings = Settings()

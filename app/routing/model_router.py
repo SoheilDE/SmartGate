@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from app.config import gateway_config
 from app.config.settings import settings
 from app.routing.complexity_scorer import score as complexity_score
 
@@ -12,24 +13,26 @@ class ModelConfig:
 
 
 def _fast() -> ModelConfig:
+    cfg = gateway_config.fast_model()
     return ModelConfig(
-        model=settings.fast_model,
-        base_url=settings.fast_model_base_url,
+        model=cfg.get("model", settings.fast_model),
+        base_url=cfg.get("base_url", settings.fast_model_base_url),
         api_key=settings.fast_model_api_key,
     )
 
 
 def _powerful() -> ModelConfig:
+    cfg = gateway_config.powerful_model()
     return ModelConfig(
-        model=settings.powerful_model,
-        base_url=settings.powerful_model_base_url,
+        model=cfg.get("model", settings.powerful_model),
+        base_url=cfg.get("base_url", settings.powerful_model_base_url),
         api_key=settings.powerful_model_api_key,
     )
 
 
 def select_model(prompt: str, *, force_powerful: bool = False) -> tuple[ModelConfig, float]:
-    """Return (ModelConfig, complexity_score). Always returns powerful model when force_powerful=True."""
     sc = complexity_score(prompt)
-    if force_powerful or sc >= settings.complexity_threshold:
+    threshold = gateway_config.complexity_threshold()
+    if force_powerful or sc >= threshold:
         return _powerful(), sc
     return _fast(), sc

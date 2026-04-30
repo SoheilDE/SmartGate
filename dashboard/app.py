@@ -1,11 +1,11 @@
 import os
-import sqlite3
 import time
 
 import pandas as pd
+import psycopg2
 import streamlit as st
 
-DB_PATH = os.getenv("METRICS_DB_PATH", "./metrics.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://smartgate:smartgate@localhost:5432/smartgate")
 
 st.set_page_config(page_title="SmartGate Dashboard", layout="wide")
 st.title("SmartGate Observability Dashboard")
@@ -15,13 +15,14 @@ REFRESH_INTERVAL = 5  # seconds
 
 @st.cache_data(ttl=REFRESH_INTERVAL)
 def load_data() -> pd.DataFrame:
-    if not os.path.exists(DB_PATH):
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        df = pd.read_sql(
+            "SELECT * FROM requests ORDER BY ts DESC LIMIT 1000", conn
+        )
+        conn.close()
+    except Exception:
         return pd.DataFrame()
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query(
-        "SELECT * FROM requests ORDER BY ts DESC LIMIT 1000", conn
-    )
-    conn.close()
     if df.empty:
         return df
     df["datetime"] = pd.to_datetime(df["ts"], unit="s")
@@ -52,7 +53,7 @@ st.divider()
 # ── Per-model latency ─────────────────────────────────────────────────────────
 st.subheader("Avg Latency by Model")
 latency_by_model = (
-    df[df["cache_hit"] == 0]
+    df[df["cache_hit"] == False]
     .groupby("model")["latency_ms"]
     .mean()
     .reset_index()
@@ -63,7 +64,6 @@ st.bar_chart(latency_by_model.set_index("model"))
 # ── Token usage over time ─────────────────────────────────────────────────────
 st.subheader("Token Usage Over Time")
 df_sorted = df.sort_values("datetime")
-df_sorted["total_tokens"] = df_sorted["prompt_tokens"] + df_sorted["completion_tokens"]
 token_ts = df_sorted.set_index("datetime")[["prompt_tokens", "completion_tokens"]]
 st.line_chart(token_ts)
 
@@ -75,7 +75,7 @@ st.line_chart(volume.set_index("minute"))
 
 # ── Cache hit vs miss ─────────────────────────────────────────────────────────
 st.subheader("Cache Hit vs Miss")
-cache_counts = df["cache_hit"].map({1: "HIT", 0: "MISS"}).value_counts().reset_index()
+cache_counts = df["cache_hit"].map({True: "HIT", False: "MISS"}).value_counts().reset_index()
 cache_counts.columns = ["result", "count"]
 st.bar_chart(cache_counts.set_index("result"))
 
