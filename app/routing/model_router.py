@@ -43,6 +43,7 @@ def select_model(
     messages: list | None = None,
     *,
     force_powerful: bool = False,
+    force_tier: str | None = None,
 ) -> tuple[ModelConfig, float, str]:
     """
     Returns (model_config, final_score, routing_reason).
@@ -69,7 +70,11 @@ def select_model(
     threshold = gateway_config.complexity_threshold()
     text = prompt.lower()
 
-    if force_powerful:
+    if force_tier:
+        tier = force_tier
+        decision = "tag_override"
+        matched_keywords = []
+    elif force_powerful:
         tier = "powerful"
         decision = "forced"
         matched_keywords = []

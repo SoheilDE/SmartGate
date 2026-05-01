@@ -96,6 +96,41 @@ All model tiers — including custom ones — are fully configurable via the adm
 
 **Streaming support:** SmartGate fully supports `"stream": true`. Chunks are forwarded to the client in real-time as they arrive from the upstream model. The semantic cache and telemetry still work — SmartGate assembles the full response in the background after the stream completes.
 
+### 4. User Tags — Per-Request Control Without API Changes
+
+Users can embed a tag at the very start of their message to override SmartGate's automatic decisions for that specific request. The tag is stripped before the message is forwarded — the model never sees it.
+
+**Tag format:** `</tag1,tag2> your message here`
+
+| Tag | Effect |
+|---|---|
+| `fast`, `powerful`, or any tier name | Force a specific model tier — skips the router entirely |
+| `no-cache` | Skip cache lookup and storage for this request |
+| `no-fallback` | Skip fallback validation for this request |
+| `stream` | Force streaming on, regardless of the `stream` field in the payload |
+| `no-stream` | Force streaming off |
+
+**Examples:**
+
+```bash
+# Force the fast model for a request the router would normally escalate
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer sk-sg-..." \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "</fast> What is the capital of France?"}]}'
+
+# Skip cache and fallback — get a fresh response directly
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer sk-sg-..." \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "</powerful,no-cache> Analyze this legal contract..."}]}'
+```
+
+- Multiple tags are comma-separated inside the `</ >` delimiters
+- Unknown tags are ignored silently
+- Each tag controls exactly one pipeline step — they are independent of each other
+- The parsed tags are echoed back in the `X-Tags` response header
+
 ### 3. Fallback Validator — Reliability Without Manual Retries
 If a model returns a malformed or empty response, SmartGate catches it before your application ever sees it and automatically retries on the powerful model. No error pages, no silent failures, no engineering time spent building retry logic.
 
@@ -391,8 +426,9 @@ Every proxied response includes headers for debugging and observability integrat
 | `X-Cache` | `HIT` | Served from semantic cache |
 | `X-Model-Used` | `gpt-3.5-turbo` | Which model handled the request |
 | `X-Complexity-Score` | `0.42` | Final routing score (0 = simple, 1 = complex) |
-| `X-Routing-Reason` | `intent=code, decision=intent_rule, tier=powerful, ...` | Full breakdown of why this model was selected |
+| `X-Routing-Reason` | `intent=code, decision=tag_override, tier=fast, ...` | Full breakdown of why this model was selected |
 | `X-Fallback` | `False` | Whether fallback was triggered |
+| `X-Tags` | `fast,no-cache` | Tags parsed from the request (`none` if no tag was present) |
 
 ---
 

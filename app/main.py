@@ -17,6 +17,7 @@ from app.config.settings import settings
 from app.fallback.validator import validate
 from app.rate_limit.limiter import check as rate_limit_check
 from app.routing.model_router import select_model
+from app.tags.parser import parse as parse_tags
 from app.telemetry.metrics import RequestRecord, init_db, record
 
 
@@ -147,15 +148,26 @@ async def chat_completions(request: Request):
     if not messages:
         raise HTTPException(status_code=422, detail="messages field is required")
 
+    # ── Tag parsing ──────────────────────────────────────────────────────────
+    # Extract </tier,no-cache,...> from the last user message and strip it so
+    # the model never sees the tag.
+    messages, tag_overrides = parse_tags(messages)
+    clean_payload = {**payload, "messages": messages}
+
     stream = payload.get("stream", False)
+    if tag_overrides.force_stream is not None:
+        stream = tag_overrides.force_stream
+
     prompt = " ".join(
         m.get("content", "") for m in messages if m.get("role") == "user"
     )
     t_start = time.perf_counter()
     fallback_used = False
 
+    tags_header = ",".join(tag_overrides.tags_found) if tag_overrides.tags_found else "none"
+
     # ── 1. Semantic cache ────────────────────────────────────────────────────
-    if gateway_config.feature_enabled("semantic_cache"):
+    if not tag_overrides.skip_cache and gateway_config.feature_enabled("semantic_cache"):
         cached = semantic_cache.lookup(prompt)
         if cached:
             latency_ms = (time.perf_counter() - t_start) * 1000
@@ -173,15 +185,19 @@ async def chat_completions(request: Request):
                 return StreamingResponse(
                     _stream_from_cache(response_body),
                     media_type="text/event-stream",
-                    headers={"X-Cache": "HIT", "X-Model-Used": "cache"},
+                    headers={"X-Cache": "HIT", "X-Model-Used": "cache", "X-Tags": tags_header},
                 )
             return JSONResponse(
                 content=response_body,
-                headers={"X-Cache": "HIT", "X-Model-Used": "cache"},
+                headers={"X-Cache": "HIT", "X-Model-Used": "cache", "X-Tags": tags_header},
             )
 
     # ── 2. Model routing ─────────────────────────────────────────────────────
-    if gateway_config.feature_enabled("model_routing"):
+    if tag_overrides.tier:
+        model_cfg, complexity, routing_reason = select_model(
+            prompt, messages, force_tier=tag_overrides.tier
+        )
+    elif gateway_config.feature_enabled("model_routing"):
         model_cfg, complexity, routing_reason = select_model(prompt, messages)
     else:
         model_cfg, complexity, routing_reason = select_model(prompt, messages, force_powerful=True)
@@ -189,25 +205,30 @@ async def chat_completions(request: Request):
     # ── Streaming path ───────────────────────────────────────────────────────
     if stream:
         return StreamingResponse(
-            _stream_llm(payload, model_cfg, prompt, t_start, complexity),
+            _stream_llm(clean_payload, model_cfg, prompt, t_start, complexity, tag_overrides.skip_cache),
             media_type="text/event-stream",
             headers={
                 "X-Cache": "MISS",
                 "X-Model-Used": model_cfg.model,
                 "X-Complexity-Score": str(complexity),
                 "X-Routing-Reason": routing_reason,
+                "X-Tags": tags_header,
             },
         )
 
     # ── Non-streaming path ───────────────────────────────────────────────────
     async with httpx.AsyncClient() as client:
         # ── 3. Forward request ───────────────────────────────────────────────
-        response_data = await _call_llm(payload, model_cfg, client)
+        response_data = await _call_llm(clean_payload, model_cfg, client)
 
         # ── 4. Fallback ──────────────────────────────────────────────────────
-        if gateway_config.feature_enabled("fallback") and not validate(response_data):
+        if (
+            not tag_overrides.skip_fallback
+            and gateway_config.feature_enabled("fallback")
+            and not validate(response_data)
+        ):
             fallback_cfg, _, _ = select_model(prompt, messages, force_powerful=True)
-            response_data = await _call_llm(payload, fallback_cfg, client)
+            response_data = await _call_llm(clean_payload, fallback_cfg, client)
             model_cfg = fallback_cfg
             fallback_used = True
 
@@ -215,7 +236,7 @@ async def chat_completions(request: Request):
     usage = response_data.get("usage", {})
 
     # ── 5. Store in cache ────────────────────────────────────────────────────
-    if gateway_config.feature_enabled("semantic_cache"):
+    if not tag_overrides.skip_cache and gateway_config.feature_enabled("semantic_cache"):
         semantic_cache.store(prompt, json.dumps(response_data))
 
     # ── 6. Record telemetry ──────────────────────────────────────────────────
@@ -236,6 +257,7 @@ async def chat_completions(request: Request):
             "X-Complexity-Score": str(complexity),
             "X-Routing-Reason": routing_reason,
             "X-Fallback": str(fallback_used),
+            "X-Tags": tags_header,
         },
     )
 
@@ -275,7 +297,7 @@ async def _stream_from_cache(response_body: dict):
     yield "data: [DONE]\n\n"
 
 
-async def _stream_llm(payload: dict, model_cfg, prompt: str, t_start: float, complexity: float):
+async def _stream_llm(payload: dict, model_cfg, prompt: str, t_start: float, complexity: float, skip_cache: bool = False):
     """Forward SSE chunks from upstream LLM, then cache + record telemetry when done."""
     headers = {
         "Authorization": f"Bearer {model_cfg.api_key}",
@@ -323,7 +345,7 @@ async def _stream_llm(payload: dict, model_cfg, prompt: str, t_start: float, com
     # Post-stream: store assembled response in cache and record telemetry
     latency_ms = (time.perf_counter() - t_start) * 1000
 
-    if gateway_config.feature_enabled("semantic_cache") and accumulated_content:
+    if not skip_cache and gateway_config.feature_enabled("semantic_cache") and accumulated_content:
         cached_response = {
             "choices": [
                 {"message": {"role": "assistant", "content": accumulated_content}, "finish_reason": "stop"}
