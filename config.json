@@ -4,6 +4,11 @@
     "model_routing": true,
     "fallback": true
   },
+  "rate_limiting": {
+    "enabled": false,
+    "default_rph": 1000,
+    "per_ip": {}
+  },
   "routing": {
     "complexity_threshold": 0.6,
     "cache_similarity_threshold": 0.92,

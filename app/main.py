@@ -13,6 +13,7 @@ from app.cache import semantic_cache
 from app.config import gateway_config
 from app.config.settings import settings
 from app.fallback.validator import validate
+from app.rate_limit.limiter import check as rate_limit_check
 from app.routing.model_router import select_model
 from app.telemetry.metrics import RequestRecord, init_db, record
 
@@ -93,6 +94,19 @@ def list_models():
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
+    client_ip = request.client.host
+    allowed, limit, remaining = await rate_limit_check(client_ip)
+    if not allowed:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Rate limit exceeded. Try again in 60 seconds."},
+            headers={
+                "X-RateLimit-Limit": str(limit),
+                "X-RateLimit-Remaining": "0",
+                "Retry-After": "3600",
+            },
+        )
+
     payload = await request.json()
     messages = payload.get("messages", [])
     if not messages:

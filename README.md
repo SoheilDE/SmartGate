@@ -159,6 +159,14 @@ X-Admin-Api-Key: your-strong-secret-here
     "model_routing": true,
     "fallback": true
   },
+  "rate_limiting": {
+    "enabled": false,
+    "default_rph": 1000,
+    "per_ip": {
+      "203.0.113.5": 200,
+      "198.51.100.1": 10
+    }
+  },
   "routing": {
     "complexity_threshold": 0.6,
     "cache_similarity_threshold": 0.92,
@@ -187,6 +195,9 @@ X-Admin-Api-Key: your-strong-secret-here
 | `features.semantic_cache` | Every request hits the LLM — useful for debugging or cache-busting |
 | `features.model_routing` | All requests go to the powerful model regardless of complexity |
 | `features.fallback` | Invalid responses are returned as-is without retrying |
+| `rate_limiting.enabled` | When `true`, enforces per-IP request limits |
+| `rate_limiting.default_rph` | Default requests-per-hour for any IP not listed in `per_ip` |
+| `rate_limiting.per_ip` | Map of IP → rph overrides; any IP not listed falls back to `default_rph` |
 | `routing.complexity_threshold` | Lower → more prompts go to the powerful model; higher → more go to fast |
 | `routing.cache_similarity_threshold` | Lower → more cache hits (less precise); higher → fewer but more accurate hits |
 | `routing.keyword_routing` | Ordered list of keyword rules — first match wins, takes priority over intent and score |
@@ -284,6 +295,25 @@ curl -X PUT http://localhost:8000/admin/config \
 ```
 
 The `api_key_env` field is the **name** of an environment variable — the actual key stays in `.env` and is never stored in `config.json`. You can define as many model tiers as you need, from any OpenAI-compatible provider.
+
+**Enable rate limiting and set per-IP overrides:**
+```bash
+curl -X PUT http://localhost:8000/admin/config \
+  -H "X-Admin-Api-Key: your-strong-secret-here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "rate_limiting": {
+      "enabled": true,
+      "default_rph": 1000,
+      "per_ip": {
+        "203.0.113.5": 200,
+        "198.51.100.1": 10
+      }
+    }
+  }'
+```
+
+Limits apply immediately — no restart required. Any IP not listed in `per_ip` falls back to `default_rph`. Exceeded requests receive a `429` with `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `Retry-After: 3600` headers.
 
 **Reload `config.json` from disk** (after editing the file directly):
 ```bash

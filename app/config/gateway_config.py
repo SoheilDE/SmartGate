@@ -15,6 +15,11 @@ def _defaults() -> dict[str, Any]:
             "model_routing": True,
             "fallback": True,
         },
+        "rate_limiting": {
+            "enabled": False,
+            "default_rph": 1000,
+            "per_ip": {},
+        },
         "routing": {
             "complexity_threshold": 0.6,
             "cache_similarity_threshold": 0.92,
@@ -105,3 +110,8 @@ def keyword_routing() -> list[dict]:
     """Return the ordered list of keyword routing rules (may be empty if not set)."""
     with _lock:
         return _config.get("routing", {}).get("keyword_routing", [])
+
+
+def rate_limit_config() -> dict:
+    with _lock:
+        return _config.get("rate_limiting", {"enabled": False, "default_rph": 1000, "per_ip": {}})
