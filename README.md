@@ -132,6 +132,52 @@ SmartGate ships with a real-time Streamlit dashboard so you always know where yo
 
 ---
 
+## Authentication
+
+SmartGate requires every client to authenticate before making LLM requests.
+
+### User flow
+
+**1. Register an account** (one-time):
+```bash
+curl -X POST http://localhost:8000/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username": "alice", "password": "your-password"}'
+```
+
+**2. Login to get an API key** (valid 24 hours):
+```bash
+curl -X POST http://localhost:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "alice", "password": "your-password"}'
+# → { "api_key": "sk-sg-...", "expires_in": "24h" }
+```
+
+**3. Use the API key on every request:**
+```bash
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer sk-sg-..." \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+> The API key expires after 24 hours. Call `/auth/login` again to get a new one.
+
+### Admin whitelist
+
+Anyone can register and receive an API key — but requests will be rejected with `403` until an admin adds the username to `users.json` via the `/admin/users` endpoint:
+
+```bash
+curl -X PUT http://localhost:8000/admin/users \
+  -H "X-Admin-Api-Key: your-strong-secret-here" \
+  -H "Content-Type: application/json" \
+  -d '{"alice": {"enabled": true}, "bob": {"enabled": false}}'
+```
+
+Setting `"enabled": false` blocks the user without removing them from the list. Changes take effect immediately — no restart required.
+
+---
+
 ## Live Admin Configuration
 
 SmartGate ships with a secured admin API that lets operators toggle features and change routing rules **without restarting the service**. All changes are persisted to `config.json` and take effect immediately.
@@ -148,6 +194,17 @@ Pass it as a header on every admin request:
 
 ```
 X-Admin-Api-Key: your-strong-secret-here
+```
+
+### `users.json` Structure
+
+Managed exclusively via `/admin/users`. Kept separate from service policy so user access can be changed without touching routing or model config.
+
+```json
+{
+  "alice": { "enabled": true },
+  "bob":   { "enabled": false }
+}
 ```
 
 ### `config.json` Structure

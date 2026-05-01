@@ -9,8 +9,10 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from prometheus_fastapi_instrumentator import Instrumentator
 
+from app.auth.db import resolve_key
+from app.auth.router import router as auth_router
 from app.cache import semantic_cache
-from app.config import gateway_config
+from app.config import gateway_config, users_config
 from app.config.settings import settings
 from app.fallback.validator import validate
 from app.rate_limit.limiter import check as rate_limit_check
@@ -21,6 +23,7 @@ from app.telemetry.metrics import RequestRecord, init_db, record
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     gateway_config.load(settings.gateway_config_path)
+    users_config.load(settings.users_config_path)
     semantic_cache.init_collection()
     init_db()
     yield
@@ -28,6 +31,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="SmartGate", lifespan=lifespan)
 Instrumentator().instrument(app).expose(app, endpoint="/instrumentator-metrics")
+app.include_router(auth_router)
 
 _admin_key_header = APIKeyHeader(name="X-Admin-Api-Key", auto_error=False)
 
@@ -72,6 +76,26 @@ def reload_config():
     return {"status": "reloaded", "config": gateway_config.get()}
 
 
+# ── Admin users endpoints ─────────────────────────────────────────────────────
+
+@app.get("/admin/users", dependencies=[Depends(require_admin)])
+def get_users():
+    return users_config.get()
+
+
+@app.put("/admin/users", dependencies=[Depends(require_admin)])
+async def update_users(request: Request):
+    body = await request.json()
+    users_config.update(body)
+    return {"status": "updated", "users": users_config.get()}
+
+
+@app.post("/admin/users/reload", dependencies=[Depends(require_admin)])
+def reload_users():
+    users_config.reload()
+    return {"status": "reloaded", "users": users_config.get()}
+
+
 # ── OpenAI-compatible endpoints ───────────────────────────────────────────────
 
 @app.get("/v1/models")
@@ -94,12 +118,23 @@ def list_models():
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
-    client_ip = request.client.host
-    allowed, limit, remaining = await rate_limit_check(client_ip)
+    # ── Auth ─────────────────────────────────────────────────────────────────
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    api_key = auth_header.removeprefix("Bearer ").strip()
+    username = resolve_key(api_key)
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid or expired API key")
+    if not users_config.is_allowed(username):
+        raise HTTPException(status_code=403, detail="Your account is not enabled. Contact an admin.")
+
+    # ── Rate limit (keyed by username) ────────────────────────────────────────
+    allowed, limit, remaining = await rate_limit_check(username)
     if not allowed:
         return JSONResponse(
             status_code=429,
-            content={"detail": "Rate limit exceeded. Try again in 60 seconds."},
+            content={"detail": "Rate limit exceeded. Try again later."},
             headers={
                 "X-RateLimit-Limit": str(limit),
                 "X-RateLimit-Remaining": "0",

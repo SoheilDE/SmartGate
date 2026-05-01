@@ -27,6 +27,7 @@ class Settings(BaseSettings):
 
     # Gateway config file
     gateway_config_path: str = "config.json"
+    users_config_path: str = "users.json"
 
     # Telemetry
     database_url: str = "postgresql://smartgate:smartgate@localhost:5432/smartgate"

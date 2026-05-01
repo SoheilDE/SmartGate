@@ -41,6 +41,7 @@ def _conn() -> psycopg2.extensions.connection:
 
 
 def init_db() -> None:
+    from app.auth.db import init_auth_tables
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -55,6 +56,7 @@ def init_db() -> None:
                     fallback          BOOLEAN          NOT NULL DEFAULT FALSE
                 )
             """)
+    init_auth_tables()
 
 
 @dataclass
